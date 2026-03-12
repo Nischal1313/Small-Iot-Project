@@ -138,32 +138,6 @@ void OledDisplay::commit() {
   }
 }
 
-void OledDisplay::drawMainMenu() {
-  clear();
-  drawString(0, 0, "jump");
-  drawString(20, 20, "time");
-  drawString(35, 40, "calories");
-  commit();
-}
-
-void OledDisplay::drawJumps(const uint64_t jumps) {
-  clear();
-  drawString(10, 10, "jump");
-  commit();
-}
-
-void OledDisplay::drawTimer(const uint64_t cur_time) {
-  clear();
-  drawString(30, 30, "time");
-  commit();
-}
-
-void OledDisplay::drawCalories(const uint16_t cals) {
-  clear();
-  drawString(50, 50, "calories");
-  commit();
-}
-
 void OledDisplay::sendCommand(uint8_t cmd) {
   uint8_t buf[2] = {0x80, cmd}; // Control byte = command
 
@@ -177,7 +151,7 @@ void OledDisplay::sendCommand(uint8_t cmd) {
   }
 }
 
-void OledDisplay::initSSD1306() {
+void const OledDisplay::initSSD1306() {
   // Basic SSD1306 initialization sequence
   sendCommand(0xAE); // Display off
   sendCommand(0x20);
@@ -239,7 +213,7 @@ void OledDisplay::drawString(int x, int y, const char *str) {
   int cursor = x;
   while (*str) {
     drawChar(cursor, y, *str); // pass single char
-    cursor += 8;                      // advance cursor by font width + spacing
+    cursor += 8; // advance cursor by font width + spacing
     str++;
   }
 }

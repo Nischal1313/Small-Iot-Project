@@ -19,16 +19,11 @@ public:
   void commit();
 
   void drawChar(int x, int y, char c);
-  void drawString(int x, int y, const char *str);
-  void drawMainMenu();
-  void drawJumps(uint64_t jumps);
-  void drawTimer(uint64_t cur_time);
-  void drawCalories(uint16_t cals);
   bool isInitialized() const { return _initialized; }
 
   private:
     void sendCommand(uint8_t cmd);
-    void initSSD1306();
+    void const initSSD1306();
     void init();
     void cleanup();
 
@@ -40,6 +35,8 @@ public:
 
     static constexpr int WIDTH = 128;
     static constexpr int HEIGHT = 64;
+    static constexpr uint8_t FONT_WIDTH = 8;
+    static constexpr uint8_t FONT_HEIGHT = FONT_WIDTH;
 
     uint8_t _framebuffer[WIDTH * HEIGHT / 8];
   };
