@@ -54,6 +54,7 @@ app/private/database.db
 # ===============================
 .idea/
 .vscode/
+.cache/
 
 # ===============================
 # OS files
