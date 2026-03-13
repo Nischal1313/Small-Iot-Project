@@ -9,293 +9,166 @@
 #include "jump.h"
 #include "max30102.h"
 #include "mutex.h"
+#include <cstdint>
 #include <cstdio>
 #include <inttypes.h>
 
-/* =========================
-   CONFIGURATION
-   ========================= */
-constexpr float JUMP_THRESHOLD_FACTOR = 1.3f;
-constexpr int MIN_JUMP_INTERVAL_MS = 300;
-constexpr int JUMP_UPDATE_HZ = 100;
-constexpr int DISPLAY_UPDATE_HZ = 4;
-constexpr int CALIBRATION_TIME_MS = 3000;
+// Jump detector tuning
+constexpr float    JUMP_THRESHOLD_FACTOR = 1.3f;
+constexpr uint32_t MIN_JUMP_INTERVAL_MS  = 300;   
+constexpr int      JUMP_UPDATE_HZ        = 100;
+constexpr int      DISPLAY_UPDATE_HZ     = 4;
+constexpr uint32_t CALIBRATION_TIME_MS   = 3000;  
+// SpO2 / HR
+constexpr int SPO2_BUFFER_SIZE = 100;         
+constexpr int SPO2_SAMPLE_HZ   = 100;
+constexpr int BLE_JUMP_CONFIG_INDEX = 2;
 
-constexpr int SPO2_BUFFER_SIZE = 100;
-constexpr int SPO2_SAMPLE_HZ = 100;
-/* =========================
-   GLOBALS
-   ========================= */
 static const char *TAG = "JUMP_TEST";
-static OledDisplay *display = nullptr;
-static JumpDetector *accelDetector = nullptr;
-static SensorReading *sensor = nullptr;
+
+static OledDisplay   *display       = nullptr;
+static JumpDetector  *accelDetector = nullptr;
+static SensorReading *sensor        = nullptr;
+
+// Protects accelDetector, accelCountsZ, and the calibration flags
 static SemaphoreHandle_t dataMutex = nullptr;
 
-// Calibration
+// Calibration state — only ever written inside dataMutex
 static uint32_t calibrationStartTime = 0;
-static bool calibrationPhase = true;
+static bool     calibrationPhase     = true;
 
-// Count cache for display (Z-axis only)
+// Jump count snapshot for the display — written + read under dataMutex
 static uint32_t accelCountsZ[NUM_TIMING_CONFIGS];
 
-// Heart rate / SpO2 — written by heartRateTask, read by bleUpdateTask +
-// displayTask
-static SemaphoreHandle_t hrMutex = nullptr;
-static int32_t g_heart_rate = 0;
-static int8_t g_hr_valid = 0;
-static float g_spo2 = 0.0f;
-static int8_t g_spo2_valid = 0;
-
-/* =========================
-   JUMP DETECTION TASK
-   ========================= */
 void jumpDetectionTask(void *param) {
   ESP_LOGI(TAG, "Jump detection task started");
   bool wasStreaming = false;
+
   while (true) {
     const bool isStreaming = jr_ble_is_streaming();
+
     {
       MutexGuard lock(dataMutex);
-      // Start of a new BLE workout session: reset detector state/counts so
-      // OLED and web session counters both begin from 0.
+
+      // New BLE workout session started: reset counts and restart calibration
       if (isStreaming && !wasStreaming) {
         accelDetector->resetSession();
         calibrationStartTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        calibrationPhase = true;
+        calibrationPhase     = true;
+        ESP_LOGI(TAG, "BLE stream started — session reset");
       }
+
+      // Drive the detector (drains the gyro queue, updates state machines)
       accelDetector->update();
+
+      // Once enough jumps have been seen the detector self-calibrates;
+      // mirror that into our display-side calibration flag.
+      if (calibrationPhase && accelDetector->isCalibrated()) {
+        calibrationPhase = false;
+        ESP_LOGI(TAG, "Jump detector calibrated");
+      }
     }
+
     wasStreaming = isStreaming;
     vTaskDelay(pdMS_TO_TICKS(1000 / JUMP_UPDATE_HZ));
   }
 }
 
-/* =========================
-   DISPLAY TASK
-   ========================= */
 void displayTask(void *param) {
   ESP_LOGI(TAG, "Display task started");
 
-  int displayPage = 0; // 0 = jump detail, 1 = jump summary
+  constexpr uint8_t  NUM_PAGES       = 2;   // update this when HR page is re-enabled
+  constexpr uint16_t  PAGE_DWELL_MS   = 3000;
+  int      displayPage    = 0;
   uint32_t lastPageChange = 0;
-  uint32_t now = 0;
 
   while (true) {
-    now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-    // --- Calibration phase ---
-    if (calibrationPhase) {
-      uint32_t elapsed = now - calibrationStartTime;
-      if (elapsed < CALIBRATION_TIME_MS) {
-        uint32_t remaining = (CALIBRATION_TIME_MS - elapsed) / 1000;
-        char countdownStr[32];
-
-        display->clear();
-        display->drawString(10, 10, "CALIBRATING...");
-        display->drawString(5, 25, "Start jumping!");
-        snprintf(countdownStr, sizeof(countdownStr), "%lu seconds",
-                 remaining + 1);
-        display->drawString(30, 40, countdownStr);
-        display->commit();
-
-        vTaskDelay(pdMS_TO_TICKS(1000 / DISPLAY_UPDATE_HZ));
-        continue;
-      } else {
-        calibrationPhase = false;
-        ESP_LOGI(TAG, "Calibration complete");
-      }
+    // ── Calibration splash ──────────────────────────────────────────────────
+    bool inCalibration;
+    uint32_t calStart;
+    {
+      MutexGuard lock(dataMutex);
+      inCalibration = calibrationPhase;
+      calStart      = calibrationStartTime;
     }
 
-    // --- Fetch Z counts under mutex ---
+    if (inCalibration) {
+      uint32_t elapsed   = now - calStart;
+      uint32_t remaining = (elapsed < CALIBRATION_TIME_MS)
+                               ? (CALIBRATION_TIME_MS - elapsed) / 1000
+                               : 0;
+      char buf[32];
+      display->clear();
+      display->drawString(10, 10, "CALIBRATING...");
+      display->drawString(5,  25, "Start jumping!");
+      snprintf(buf, sizeof(buf), "%lu seconds", remaining + 1);
+      display->drawString(30, 40, buf);
+      display->commit();
+      vTaskDelay(pdMS_TO_TICKS(1000 / DISPLAY_UPDATE_HZ));
+      continue;
+    }
     {
       MutexGuard lock(dataMutex);
       accelDetector->getCounts(accelCountsZ);
     }
 
-    // --- Cycle pages every 3 seconds ---
-    if (now - lastPageChange > 3000) {
-      displayPage = (displayPage + 1) % 2;
-      lastPageChange = now;
+    if (now - lastPageChange > PAGE_DWELL_MS) {
+      displayPage     = (displayPage + 1) % NUM_PAGES;
+      lastPageChange  = now;
     }
-
     display->clear();
     char line[32];
 
     if (displayPage == 0) {
-      // ===== ACCEL Z per timing config =====
-      display->drawString(0, 0, "ACCEL Z-AXIS:");
+      display->drawString(0, 0, "VERTICAL JUMPS:");
       for (int i = 0; i < NUM_TIMING_CONFIGS; i++) {
         uint32_t rise, fall;
         accelDetector->getTimingConfig(i, rise, fall);
-        snprintf(line, sizeof(line), "%lums: %lu", rise, accelCountsZ[i]);
         display->drawString(0, 12 + i * 12, line);
       }
 
-    } else if (displayPage == 1) {
-      // ===== ACCEL Z summary =====
+    } else { // displayPage == 1
       display->drawString(20, 0, "JUMP TOTAL");
-
       uint32_t totalZ;
-      float rateZ;
+      float    rateZ;
       {
         MutexGuard lock(dataMutex);
         accelDetector->getTotalJumps(totalZ);
         accelDetector->getAverageRates(rateZ);
       }
-      snprintf(line, sizeof(line), "Jumps: %lu", totalZ);
+      snprintf(line, sizeof(line), "Jumps: %lu",    totalZ);
       display->drawString(15, 25, line);
       snprintf(line, sizeof(line), "Rate:  %.0f/min", rateZ);
       display->drawString(15, 42, line);
-
-    } else {
-      // HR/SpO2 page intentionally disabled for now; keep logic for later reuse.
-      /*
-      // ===== HR / SpO2 =====
-      display->drawString(20, 0, "VITALS");
-
-      int32_t hr;
-      int8_t hrValid;
-      float spo2;
-      int8_t spo2Valid;
-      {
-        MutexGuard lock(hrMutex);
-        hr = g_heart_rate;
-        hrValid = g_hr_valid;
-        spo2 = g_spo2;
-        spo2Valid = g_spo2_valid;
-      }
-
-      if (hrValid) {
-        snprintf(line, sizeof(line), "HR:  %" PRId32 " bpm", hr);
-        display->drawString(10, 20, line);
-      } else {
-        display->drawString(10, 20, "HR:  --");
-      }
-
-      if (spo2Valid) {
-        snprintf(line, sizeof(line), "SpO2: %.0f%%", spo2);
-        display->drawString(10, 38, line);
-      } else {
-        display->drawString(10, 38, "SpO2: --");
-      }
-      */
     }
-
     display->commit();
     vTaskDelay(pdMS_TO_TICKS(1000 / DISPLAY_UPDATE_HZ));
   }
 }
 
-/* =========================
-   BLE UPDATE TASK
-   ========================= */
 void bleUpdateTask(void *param) {
   while (true) {
     uint32_t selectedJumpCount;
-
     {
       MutexGuard lock(dataMutex);
       accelDetector->getCounts(accelCountsZ);
+      selectedJumpCount = accelCountsZ[BLE_JUMP_CONFIG_INDEX];
     }
-
-    selectedJumpCount = accelCountsZ[3]; // look this up in the jump.cpp
-
-    int32_t hr;
-    int8_t hrValid;
-    float spo2;
-    int8_t spo2Valid;
-    {
-      MutexGuard lock(hrMutex);
-      hr = g_heart_rate;
-      hrValid = g_hr_valid;
-      spo2 = g_spo2;
-      spo2Valid = g_spo2_valid;
-    }
-
-    // Only send real SpO2 when the algorithm says it's valid; otherwise 0
-    uint8_t hr_to_send = hrValid ? (uint8_t)hr : 0;
-    uint8_t spo2_to_send = spo2Valid ? (uint8_t)spo2 : 0;
-    jr_ble_set_sensor_snapshot(selectedJumpCount, hr_to_send, spo2_to_send, 0);
-
-    vTaskDelay(pdMS_TO_TICKS(200));
+    jr_ble_set_sensor_snapshot(selectedJumpCount, 1, 2, 0);
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 
-/* =========================
-   HEART RATE TASK
-   ========================= */
-void heartRateTask(void *param) {
-  (void)param;
-
-  if (!maxim_max30102_init()) {
-    ESP_LOGE(TAG, "MAX30102 failed to initialize!");
-    vTaskDelete(nullptr);
-    return;
-  }
-  ESP_LOGI(TAG, "MAX30102 initialized");
-
-  // Circular sample buffers
-  static uint32_t irBuffer[SPO2_BUFFER_SIZE];
-  static uint32_t redBuffer[SPO2_BUFFER_SIZE];
-  int sampleIndex = 0;
-
-  float ratio = 0.0f, correl = 0.0f;
-  float spo2 = 0.0f;
-  int8_t spo2Valid = 0;
-  int32_t heartRate = 0;
-  int8_t hrValid = 0;
-
-  while (true) {
-    uint32_t red, ir;
-    esp_err_t ret = maxim_max30102_read_fifo(&red, &ir);
-
-    if (ret != ESP_OK) {
-      ESP_LOGW(TAG, "Failed to read MAX30102 FIFO");
-      vTaskDelay(pdMS_TO_TICKS(1000 / SPO2_SAMPLE_HZ));
-      continue;
-    }
-
-    redBuffer[sampleIndex] = red;
-    irBuffer[sampleIndex] = ir;
-    sampleIndex++;
-
-    // Once the buffer is full, run the algorithm and reset
-    if (sampleIndex >= SPO2_BUFFER_SIZE) {
-      sampleIndex = 0;
-
-      rf_heart_rate_and_oxygen_saturation(irBuffer, SPO2_BUFFER_SIZE, redBuffer,
-                                          &spo2, &spo2Valid, &heartRate,
-                                          &hrValid, &ratio, &correl);
-
-      ESP_LOGI(TAG, "HR: %" PRId32 " (valid=%d)  SpO2: %.1f (valid=%d)",
-               heartRate, hrValid, spo2, spo2Valid);
-
-      // Publish results — send 0 for SpO2 when invalid
-      {
-        MutexGuard lock(hrMutex);
-        g_heart_rate = hrValid ? heartRate : 0;
-        g_hr_valid = hrValid;
-        g_spo2 = spo2Valid ? spo2 : 0.0f;
-        g_spo2_valid = spo2Valid;
-      }
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
-}
-
-/* =========================
+/* =============================================================================
    INIT TASK
-   ========================= */
+   ============================================================================= */
 void initTask(void *param) {
-  ESP_LOGI(TAG, "=== Accel Z-Axis Jump Detector ===");
+  ESP_LOGI(TAG, "=== Vertical Jump Monitor ===");
 
   dataMutex = xSemaphoreCreateMutex();
   configASSERT(dataMutex != nullptr);
-
-  hrMutex = xSemaphoreCreateMutex();
-  configASSERT(hrMutex != nullptr);
 
   I2CManager &i2c = I2CManager::getInstance();
   i2c.init();
@@ -311,29 +184,31 @@ void initTask(void *param) {
   display->commit();
   vTaskDelay(pdMS_TO_TICKS(1500));
 
+  // Sensor starts its own FreeRTOS task that pushes mpu_data_t to a queue
+  // at 100 Hz. The jump detector drains that queue in jumpDetectionTask.
   sensor = new SensorReading();
   sensor->startTask();
-  vTaskDelay(pdMS_TO_TICKS(100));
+  vTaskDelay(pdMS_TO_TICKS(100)); // let gyro task seed the queue
 
-  accelDetector =
-      new JumpDetector(sensor, JUMP_THRESHOLD_FACTOR, MIN_JUMP_INTERVAL_MS);
+  accelDetector = new JumpDetector(sensor, JUMP_THRESHOLD_FACTOR,
+                                   MIN_JUMP_INTERVAL_MS);
 
   calibrationStartTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
-  calibrationPhase = true;
+  calibrationPhase     = true;
 
-  xTaskCreate(jumpDetectionTask, "jump_task", 4096, nullptr, 5, nullptr);
-  xTaskCreate(displayTask, "display_task", 3072, nullptr, 4, nullptr);
-  xTaskCreate(bleUpdateTask, "ble_task", 3072, nullptr, 3, nullptr);
-  //xTaskCreate(heartRateTask, "hr_task", 3072, nullptr, 3, nullptr);
+  xTaskCreate(jumpDetectionTask, "jump_task",    4096, nullptr, 5, nullptr);
+  xTaskCreate(displayTask,       "display_task", 3072, nullptr, 4, nullptr);
+  xTaskCreate(bleUpdateTask,     "ble_task",     3072, nullptr, 3, nullptr);
+  // xTaskCreate(heartRateTask,  "hr_task",      3072, nullptr, 3, nullptr);
 
   ESP_LOGI(TAG, "All tasks started");
   vTaskDelete(nullptr);
 }
 
-/* =========================
+/* =============================================================================
    APP MAIN
-   ========================= */
+   ============================================================================= */
 extern "C" void app_main(void) {
-  ESP_LOGI(TAG, "Jump Rope Monitor Starting...");
+  ESP_LOGI(TAG, "Jump Rope Monitor starting...");
   xTaskCreate(initTask, "init_task", 4096, nullptr, 6, nullptr);
 }
