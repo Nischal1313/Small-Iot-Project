@@ -3,56 +3,50 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 
-// GPIO type: input or output
 enum class GPIOMode
 {
-  INPUT,
-  OUTPUT
+    INPUT,
+    OUTPUT
 };
 
-// Pull configuration
 enum class GPIOPull
 {
-  NONE,
-  PULLUP,
-  PULLDOWN
+    NONE,
+    PULLUP,
+    PULLDOWN
 };
 
 class GPIOPin
 {
 public:
-  explicit GPIOPin(gpio_num_t pin,
-                   GPIOMode mode = GPIOMode::INPUT,
-                   GPIOPull pull = GPIOPull::PULLUP,
-                   bool invert = false,
-                   uint32_t debounce_ms = 50);
+    explicit GPIOPin(
+        gpio_num_t pinP, GPIOMode modeP = GPIOMode::INPUT, GPIOPull pullP = GPIOPull::PULLUP,
+        bool invertP = false, uint32_t debounceMsP = 50
+    );
 
-  // Basic I/O
-  bool read() const;
-  void write(bool value) const;
-  int getPin() const;
+    bool read() const;
+    void write(bool valueP) const;
+    int getPin() const;
 
-  // Button logic
-  void update();  // Call regularly (every 1–5 ms)
-  bool pressed(); // Fires once per press
-  bool held();    // Fires once per hold
-  void setHoldTime(uint32_t ms);
-  void setDebounceTime(uint32_t ms);
+    void update();
+    bool pressed();
+    bool held();
+    void setHoldTime(uint32_t msP);
+    void setDebounceTime(uint32_t msP);
 
 private:
-  gpio_num_t pin_number;
-  GPIOMode mode;
-  GPIOPull pull;
-  bool is_inverted;
+    gpio_num_t pinNumberM;
+    GPIOMode modeM;
+    GPIOPull pullM;
+    bool isInvertedM;
 
-  // Button state
-  bool lastReading;
-  bool stableState;
-  bool pressEvent;
-  bool holdEvent;
+    bool lastReadingM;
+    bool stableStateM;
+    bool pressEventM;
+    bool holdEventM;
 
-  int64_t lastChangeTime; // µs
-  int64_t pressStartTime; // µs
-  uint32_t debounce_ms;
-  uint32_t hold_ms;
+    int64_t lastChangeTimeM;
+    int64_t pressStartTimeM;
+    uint32_t debounceMsM;
+    uint32_t holdMsM;
 };

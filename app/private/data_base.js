@@ -267,7 +267,7 @@ async function findUserByCredentials(username, user_id) {
 
 // --- workouts are linked to the user ---
 async function insertWorkoutForUser(userId, body) {
-    const uid = requireIntPositive(userId, "userId");
+    const uid = String(requireIntPositive(userId, "userId"));
 
     if (!body || typeof body !== "object") {
         const err = new Error("Body must be JSON");

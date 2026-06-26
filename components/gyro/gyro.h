@@ -5,89 +5,104 @@
 #include "freertos/queue.h"
 #include <cstdint>
 
-struct mpu_data_t {
-  // World-frame vertical acceleration (gravity removed, orientation-independent).
-  // 0 at rest. Positive = accelerating upward. Negative = falling / downward push.
-  float vertical_accel_g;
+struct mpu_data_t
+{
+    // World-frame vertical acceleration (gravity removed, orientation-independent).
+    // 0 at rest. Positive = accelerating upward. Negative = falling / downward push.
+    float verticalAccelGM;
 
-  // Current complementary-filter gravity estimate in the sensor frame (units: g).
-  // Useful for debugging or feeding into a higher-level detector.
-  float grav_x;
-  float grav_y;
-  float grav_z;
+    // Current complementary-filter gravity estimate in the sensor frame (units: g).
+    // Useful for debugging or feeding into a higher-level detector.
+    float gravXM;
+    float gravYM;
+    float gravZM;
 
-  // Raw gyro in degrees-per-second
-  float gx_dps;
-  float gy_dps;
-  float gz_dps;
+    // Raw gyro in degrees-per-second
+    float gxDpsM;
+    float gyDpsM;
+    float gzDpsM;
 };
 
-class SensorReading {
+class SensorReading
+{
 public:
-  // Singleton
-  static SensorReading &getInstance() {
-    static SensorReading instance;
-    return instance;
-  }
+    // Singleton
+    static SensorReading& getInstance()
+    {
+        static SensorReading instance;
+        return instance;
+    }
 
-  // ── Public API ────────────────────────────────────────────────────────────
-  void startTask();
-  QueueHandle_t getQueue() const { return data_queue; }
+    // ── Public API ────────────────────────────────────────────────────────────
+    void startTask();
+    QueueHandle_t getQueue() const
+    {
+        return dataQueueM;
+    }
 
-  esp_err_t readRawAccel(int16_t &ax, int16_t &ay, int16_t &az);
-  esp_err_t readRawGyro (int16_t &gx, int16_t &gy, int16_t &gz);
+    esp_err_t readRawAccel(int16_t& rAxP, int16_t& rAyP, int16_t& rAzP);
+    esp_err_t readRawGyro(int16_t& rGxP, int16_t& rGyP, int16_t& rGzP);
 
-  bool isInitialized() const { return _initialized; }
-  bool isCalibrated()  const { return _calibrated;  }
+    bool isInitialized() const
+    {
+        return _initializedM;
+    }
+    bool isCalibrated() const
+    {
+        return _calibratedM;
+    }
 
-  // Re-seed the gravity estimate from a still-phase average.
-  // Device must be stationary for ~(samples × 10 ms).
-  void calibrateGravity(int samples = 50);
+    // Re-seed the gravity estimate from a still-phase average.
+    // Device must be stationary for ~(samples x 10 ms).
+    void calibrateGravity(int samplesP = 50);
 
-  // Tune the complementary filter blend at runtime (default α = 0.98).
-  //   Higher α → trust gyro more (smoother, drifts slowly over minutes).
-  //   Lower  α → trust accel more (corrects drift faster, noisier during motion).
-  void setAlpha(float alpha) { _alpha = alpha; }
+    // Tune the complementary filter blend at runtime (default alpha = 0.98).
+    //   Higher alpha -> trust gyro more (smoother, drifts slowly over minutes).
+    //   Lower  alpha -> trust accel more (corrects drift faster, noisier during motion).
+    void setAlpha(float alphaP)
+    {
+        _alphaM = alphaP;
+    }
 
-  SensorReading();
+    SensorReading();
 
 private:
-  static constexpr uint8_t MPU_ADDR = 0x68;
-  SensorReading(const SensorReading &) = delete;
-  SensorReading &operator=(const SensorReading &) = delete;
+    static uint8_t constexpr MPU_ADDR{0x68};
+    SensorReading(SensorReading const&)            = delete;
+    SensorReading& operator=(SensorReading const&) = delete;
 
-  // ── Sensor config ─────────────────────────────────────────────────────────
-  bool  _initialized;
-  bool  _calibrated;
-  float accel_sensitivity;  // raw LSB per g
-  float gyro_sensitivity;   // raw LSB per °/s
+    // ── Sensor config ─────────────────────────────────────────────────────────
+    bool _initializedM;
+    bool _calibratedM;
+    float accelSensitivityM;  // raw LSB per g
+    float gyroSensitivityM;   // raw LSB per deg/s
 
-  // ── Complementary filter state ────────────────────────────────────────────
-  // Running gravity estimate in the sensor frame (units: g).
-  // Seeded by calibrateGravity(), then updated every tick by rotateGravity()
-  // and blended with the raw accelerometer reading.
-  float _grav_x;
-  float _grav_y;
-  float _grav_z;
+    // ── Complementary filter state ────────────────────────────────────────────
+    // Running gravity estimate in the sensor frame (units: g).
+    // Seeded by calibrateGravity(), then updated every tick by rotateGravity()
+    // and blended with the raw accelerometer reading.
+    float _gravXM;
+    float _gravYM;
+    float _gravZM;
 
-  float   _alpha;    // gyro trust weight  (0 < α < 1)
-  int64_t _last_us;  // timestamp of previous loop tick (microseconds)
+    float _alphaM;      // gyro trust weight  (0 < alpha < 1)
+    int64_t _lastUsM;  // timestamp of previous loop tick (microseconds)
 
-  // ── Internal helpers ──────────────────────────────────────────────────────
-  QueueHandle_t data_queue;
+    // ── Internal helpers ──────────────────────────────────────────────────────
+    QueueHandle_t dataQueueM;
 
-  void  init();
-  void  readSensitivity();
+    void init();
+    void readSensitivity();
 
-  // Rotate the stored gravity estimate by (gx,gy,gz) [rad/s] over dt [s].
-  // Uses the Rodrigues small-angle approximation — O(1) and accurate for
-  // the short dt values produced by our 100 Hz loop.
-  void  rotateGravity(float gx_rps, float gy_rps, float gz_rps, float dt);
+    // Rotate the stored gravity estimate by (gx,gy,gz) [rad/s] over dt [s].
+    // Uses the Rodrigues small-angle approximation - O(1) and accurate for
+    // the short dt values produced by our 100 Hz loop.
+    void rotateGravity(float gxRpsP, float gyRpsP, float gzRpsP, float dtP);
 
-  // Project the raw accel vector onto the current gravity estimate,
-  // subtract the static 1 g offset, and return signed vertical acceleration.
-  float computeVerticalAccel(float ax_g, float ay_g, float az_g) const;
+    // Project the raw accel vector onto the current gravity estimate,
+    // subtract the static 1 g offset, and return signed vertical acceleration.
+    float computeVerticalAccel(float axGP, float ayGP, float azGP) const;
 
-  void  taskLoop();
-  static void taskEntry(void *param);
+    void taskLoop();
+    static void taskEntry(void* pParamP);
 };

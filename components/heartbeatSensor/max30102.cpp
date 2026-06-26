@@ -62,12 +62,20 @@
 */
 #include "max30102.h"
 #include "algorithm_by_RF.h"
+#include "i2cInit.h"
+#include "mutex.h"
+
+static i2c_port_t max30102_get_port() {
+    return I2CManager::getInstance().getPort();
+}
 
 esp_err_t maxim_max30102_write_reg(uint8_t reg, uint8_t val)
 {
+    I2CManager &i2c = I2CManager::getInstance();
+    MutexGuard lock(i2c.getMutex());
     uint8_t buf[2] = { reg, val };
     return i2c_master_write_to_device(
-        I2C_NUM_0,
+        max30102_get_port(),
         I2C_WRITE_ADDR,
         buf,
         sizeof(buf),
@@ -76,10 +84,12 @@ esp_err_t maxim_max30102_write_reg(uint8_t reg, uint8_t val)
 }
 esp_err_t maxim_max30102_read_reg(uint8_t reg, uint8_t *data)
 {
+    I2CManager &i2c = I2CManager::getInstance();
+    MutexGuard lock(i2c.getMutex());
     esp_err_t ret;
 
     ret = i2c_master_write_read_device(
-        I2C_NUM_0,
+        max30102_get_port(),
         I2C_WRITE_ADDR,
         &reg,
         1,
@@ -121,11 +131,13 @@ bool maxim_max30102_init(void)
 //#else
 esp_err_t maxim_max30102_read_fifo(uint32_t *red, uint32_t *ir)
 {
+    I2CManager &i2c = I2CManager::getInstance();
+    MutexGuard lock(i2c.getMutex());
     uint8_t reg = REG_FIFO_DATA;
     uint8_t data[6];
 
     esp_err_t ret = i2c_master_write_read_device(
-        I2C_NUM_0,
+        max30102_get_port(),
         I2C_WRITE_ADDR,
         &reg,
         1,

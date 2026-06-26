@@ -10,36 +10,40 @@
 #include <cstdint>
 #include <cstring>
 
-class OledDisplay {
+class OledDisplay
+{
 public:
-    OledDisplay();               // Constructor auto-initializes
-    ~OledDisplay();              // Destructor cleans up resources
+    OledDisplay();
+    ~OledDisplay();
 
-    void clear();                // Clears the framebuffer
-    void commit();               // Sends framebuffer to the display
+    void clear();
+    void commit();
 
-    void drawChar(int position_x, int position_y, char character);
-    void drawString(int position_x, int position_y, const char* text);
+    void drawChar(int positionXP, int positionYP, char characterP);
+    void drawString(int positionXP, int positionYP, char const *pTextP);
 
-    bool isInitialized() const { return _initialized; }
+    bool isInitialized() const
+    {
+        return initializedM;
+    }
 
 private:
-    void sendCommand(uint8_t command);
+    void sendCommand(uint8_t commandP);
     void initSSD1306Driver();
     void initializeDisplay();
     void cleanupResources();
 
-    bool _initialized;
-    const uint8_t _i2c_address;
+    bool initializedM;
+    uint8_t const i2cAddressM;
 
-    esp_lcd_panel_io_handle_t _panel_io;
-    esp_lcd_panel_handle_t _panel;
+    esp_lcd_panel_io_handle_t pPanelIoM;
+    esp_lcd_panel_handle_t pPanelM;
 
-    static constexpr uint8_t DISPLAY_WIDTH = 128;
-    static constexpr uint8_t DISPLAY_HEIGHT = 64;
-    static constexpr uint8_t FONT_WIDTH = 8;
-    static constexpr uint8_t FONT_HEIGHT = 8;
-    static constexpr uint8_t DISPLAY_ADDR = 0x3C;
+    static uint8_t constexpr DISPLAY_WIDTH  = 128;
+    static uint8_t constexpr DISPLAY_HEIGHT = 64;
+    static uint8_t constexpr FONT_WIDTH     = 8;
+    static uint8_t constexpr FONT_HEIGHT    = 8;
+    static uint8_t constexpr DISPLAY_ADDR   = 0x3C;
 
-    uint8_t _framebuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT / 8];
+    uint8_t framebufferM[DISPLAY_WIDTH * DISPLAY_HEIGHT / 8];
 };
